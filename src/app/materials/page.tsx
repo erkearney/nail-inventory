@@ -43,12 +43,20 @@ export default function MaterialsPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-gray-900">Materials</h1>
-        <Link
-          href="/materials/add"
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md"
-        >
-          Add Material
-        </Link>
+        <div className="flex space-x-3">
+          <Link
+            href="/inventory/adjust"
+            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md"
+          >
+            Adjust Stock
+          </Link>
+          <Link
+            href="/materials/add"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md"
+          >
+            Add Material
+          </Link>
+        </div>
       </div>
 
       {/* Summary Cards */}
@@ -112,6 +120,14 @@ export default function MaterialsPage() {
                     </li>
                   ))}
                 </ul>
+                <div className="mt-2">
+                  <Link
+                    href="/inventory/adjust"
+                    className="text-yellow-800 underline hover:text-yellow-900"
+                  >
+                    Adjust stock levels →
+                  </Link>
+                </div>
               </div>
             </div>
           </div>
@@ -208,12 +224,12 @@ export default function MaterialsPage() {
                       >
                         Edit
                       </Link>
-                      <button
-                        onClick={() => {/* TODO: Add stock adjustment */}}
+                      <Link
+                        href={`/inventory/adjust?material=${material.id}`}
                         className="text-green-600 hover:text-green-900"
                       >
                         Adjust Stock
-                      </button>
+                      </Link>
                     </td>
                   </tr>
                 ))}

@@ -35,7 +35,7 @@ export function initializeDatabase() {
     )
   `);
 
-  // Services table (for future use)
+  // Services table
   db.exec(`
     CREATE TABLE IF NOT EXISTS services (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +83,7 @@ export function initializeDatabase() {
     )
   `);
 
-  // Client services table - records each visit
+  // Client services table
   db.exec(`
     CREATE TABLE IF NOT EXISTS client_services (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,7 +97,7 @@ export function initializeDatabase() {
     )
   `);
 
-  // Service materials used - junction table for materials used in each service
+  // Service materials used
   db.exec(`
     CREATE TABLE IF NOT EXISTS client_service_materials (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,18 +107,6 @@ export function initializeDatabase() {
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
-  `);
-
-  // Trigger to update material stock
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS update_material_stock 
-    AFTER INSERT ON inventory_transactions
-    BEGIN
-      UPDATE materials 
-      SET current_stock = current_stock + NEW.quantity_change,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = NEW.material_id;
-    END
   `);
 
   // Trigger to update client's last visit date
@@ -147,9 +135,12 @@ export const materialQueries = {
   },
   
   getById: (id: number) => {
-    return db.prepare(`
+    const stmt = db.prepare(`
       SELECT * FROM materials WHERE id = ?
-    `).get(id);
+    `);
+    const result = stmt.get(id);
+    console.log(`Fresh fetch of material ${id}:`, result?.current_stock);
+    return result;
   },
   
   create: (material: any) => {
@@ -197,6 +188,96 @@ export const materialQueries = {
       material.notes || null,
       id
     );
+  },
+
+  updateStock: (id: number, newStock: number) => {
+    const stmt = db.prepare(`
+      UPDATE materials 
+      SET current_stock = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    const result = stmt.run(Number(newStock), id);
+    console.log(`Updated material ${id} stock to ${newStock}, changes: ${result.changes}`);
+    return result;
+  },
+
+  addTransaction: (transaction: {
+    material_id: number;
+    transaction_type: string;
+    quantity_change: number;
+    notes?: string;
+  }) => {
+    console.log('Adding transaction:', transaction);
+    const stmt = db.prepare(`
+      INSERT INTO inventory_transactions 
+      (material_id, transaction_type, quantity_change, notes)
+      VALUES (?, ?, ?, ?)
+    `);
+    
+    const result = stmt.run(
+      transaction.material_id,
+      transaction.transaction_type,
+      transaction.quantity_change,
+      transaction.notes || null
+    );
+    
+    console.log('Transaction added with ID:', result.lastInsertRowid);
+    return result;
+  },
+
+  getTransactions: (materialId?: number, limit = 50) => {
+    if (materialId) {
+      const stmt = db.prepare(`
+        SELECT it.*, m.name as material_name, m.unit_type
+        FROM inventory_transactions it
+        JOIN materials m ON it.material_id = m.id
+        WHERE it.material_id = ?
+        ORDER BY it.created_at DESC
+        LIMIT ?
+      `);
+      return stmt.all(materialId, limit);
+    } else {
+      const stmt = db.prepare(`
+        SELECT it.*, m.name as material_name, m.unit_type
+        FROM inventory_transactions it
+        JOIN materials m ON it.material_id = m.id
+        ORDER BY it.created_at DESC
+        LIMIT ?
+      `);
+      return stmt.all(limit);
+    }
+  },
+
+  getLowStockItems: () => {
+    return db.prepare(`
+      SELECT * FROM materials 
+      WHERE is_active = 1 
+      AND current_stock <= min_stock_level
+      ORDER BY (current_stock / min_stock_level) ASC
+    `).all();
+  },
+
+  getStockSummary: () => {
+    const total = db.prepare(`
+      SELECT COUNT(*) as total_materials FROM materials WHERE is_active = 1
+    `).get();
+    
+    const lowStock = db.prepare(`
+      SELECT COUNT(*) as low_stock_count FROM materials 
+      WHERE is_active = 1 AND current_stock <= min_stock_level
+    `).get();
+    
+    const totalValue = db.prepare(`
+      SELECT SUM(current_stock * COALESCE(cost_per_unit, 0)) as total_value 
+      FROM materials WHERE is_active = 1
+    `).get();
+    
+    return {
+      total_materials: total.total_materials,
+      low_stock_count: lowStock.low_stock_count,
+      total_value: totalValue.total_value || 0
+    };
   }
 };
 
@@ -224,26 +305,26 @@ export const clientQueries = {
   },
   
   getLastService: (clientId: number) => {
-    return db.prepare(`
-      SELECT cs.*, 
-             json_group_array(
-               json_object(
-                 'material_id', csm.material_id,
-                 'material_name', m.name,
-                 'material_brand', m.brand,
-                 'material_color', m.color,
-                 'quantity_used', csm.quantity_used,
-                 'unit_type', m.unit_type
-               )
-             ) as materials
-      FROM client_services cs
-      LEFT JOIN client_service_materials csm ON cs.id = csm.client_service_id
-      LEFT JOIN materials m ON csm.material_id = m.id
-      WHERE cs.client_id = ?
-      GROUP BY cs.id
-      ORDER BY cs.service_date DESC
+    const service = db.prepare(`
+      SELECT * FROM client_services 
+      WHERE client_id = ?
+      ORDER BY service_date DESC
       LIMIT 1
     `).get(clientId);
+    
+    if (service) {
+      const materials = db.prepare(`
+        SELECT csm.*, m.name as material_name, m.brand as material_brand, 
+               m.color as material_color, m.unit_type
+        FROM client_service_materials csm
+        JOIN materials m ON csm.material_id = m.id
+        WHERE csm.client_service_id = ?
+      `).all(service.id);
+      
+      service.materials = JSON.stringify(materials);
+    }
+    
+    return service;
   }
 };
 
@@ -281,7 +362,7 @@ export const clientServiceQueries = {
     // Deduct each material from inventory
     const updateStock = db.prepare(`
       UPDATE materials 
-      SET current_stock = current_stock - ?,
+      SET current_stock = ?,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
@@ -292,17 +373,26 @@ export const clientServiceQueries = {
       WHERE id = ?
     `);
     
+    const addTransaction = db.prepare(`
+      INSERT INTO inventory_transactions 
+      (material_id, transaction_type, quantity_change, notes)
+      VALUES (?, 'deduction', ?, 'Client service deduction')
+    `);
+    
+    // Get current stock for each material
+    const getMaterial = db.prepare(`
+      SELECT current_stock FROM materials WHERE id = ?
+    `);
+    
     // Use transaction for consistency
     const transaction = db.transaction(() => {
       for (const material of materials) {
-        updateStock.run(material.quantity_used, material.material_id);
+        const currentMaterial = getMaterial.get(material.material_id);
+        const currentStock = Number(currentMaterial.current_stock) || 0;
+        const newStock = Math.max(0, currentStock - Number(material.quantity_used));
         
-        // Also add inventory transaction record
-        db.prepare(`
-          INSERT INTO inventory_transactions 
-          (material_id, transaction_type, quantity_change, notes)
-          VALUES (?, 'deduction', ?, 'Client service deduction')
-        `).run(material.material_id, -material.quantity_used);
+        updateStock.run(newStock, material.material_id);
+        addTransaction.run(material.material_id, -Number(material.quantity_used));
       }
       markDeducted.run(serviceId);
     });

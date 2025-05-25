@@ -36,6 +36,12 @@ export default function RootLayout({
                       Materials
                     </Link>
 		    <Link
+    		      href="/inventory/adjust"
+                      className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+                    >
+                      Inventory
+		    </Link>
+		    <Link
                       href="/services"
                       className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
                     >
